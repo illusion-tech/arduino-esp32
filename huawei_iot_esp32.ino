@@ -1,4 +1,3 @@
-#include <WiFi.h>
 #include "DHT.h"
 #include <PubSubClient.h>
 #include <Regexp.h>
@@ -7,12 +6,10 @@
 #define DHTTYPE DHT11
 DHT dht(DHTPIN, DHTTYPE);
 
-WiFiClient espClient;
-PubSubClient client(espClient);
+//硬串口
+HardwareSerial espSerial(1);
 
-//WIFI 连接信息
-#define WIFI_SSID "HUAWEI Mate 40"
-#define WIFI_PASSWORD "12341234"
+String comdata = "";
 
 //MQTT 连接信息
 #define MQTT_SERVER "3d7dc6e17b.iot-mqtts.cn-north-4.myhuaweicloud.com"
@@ -28,7 +25,7 @@ PubSubClient client(espClient);
 #define SERVICE_ID "Dev_data"
 
 //TOPIC 信息
-#define IOT_LINK_BODY_FORMAT "{\"services\":[{\"service_id\":" SERVICE_ID ",\"properties\":{\"Temperature\":%d,\"Humidity\":%d }}]}"
+#define IOT_LINK_BODY_FORMAT "{\"services\":[{\"service_id\":\"" SERVICE_ID "\",\"properties\":{\"Temperature\":%d,\"Humidity\":%d }}]}"
 //参考上报格式：{"services":[{"service_id":"Dev_data","properties":{"temp": 39}}]}
 //设备上报属性
 #define IOT_LINK_MQTT_TOPIC_GET_RESPONSE "$oc/devices/%s/sys/properties/get/response/request_id=%s"
@@ -37,6 +34,7 @@ PubSubClient client(espClient);
 //平台消息下发
 #define IOT_LINK_MQTT_TOPIC_DOWN "$oc/devices/" DEVICE_ID "/sys/messages/down"
 
+
 //上报的温湿度值
 float temperature;
 float humidity;
@@ -44,22 +42,33 @@ long lastMsg = 0;
 
 void setup() {
   Serial.begin(115200);
-  //WIFI 初始化
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.println("Connecting to WiFi..");
-  }
-  Serial.println("Connected to the WiFi network");
+  //串口的开启，传入下面四个参数：波特率，默认SERIAL_8N1为8位数据位、无校验、1位停止位，后面两个分别为 RXD,TXD 引脚
+  espSerial.begin(115200, SERIAL_8N1, 33, 34);
   //传感器初始化
   dht.begin();
   mqttInit();
 }
 
 void loop() {
-  if (!client.connected()) {
-    mqttInit();
-  } else client.loop();
+  /*Serial.available()判断串口的缓冲区有无数据，
+当Serial.available()>0时，说明串口接收到了数据，可以读取*/
+
+  while (espSerial.available() > 0) {
+    comdata += char(Serial.read());
+    delay(2);
+  }
+  if (comdata.length() > 0) {
+    espSerial.println(comdata);
+    comdata = "";
+  }
+  if (espSerial.available()) {
+    espSerial.print("Serial Data");
+    espSerial.println(char(Serial.read()));
+  }
+  //if (espSerial.available()) {
+  //  Serial.print("espSerial Data:");
+  //  Serial.println(char(espSerial.read()));
+  //}
   long now = millis();
   //定时上报
   if (now - lastMsg > 3000) {
@@ -70,46 +79,26 @@ void loop() {
 
 //MQTT 初始化
 void mqttInit() {
-  client.setServer(MQTT_SERVER, MQTT_PORT);
-  while (!client.connected()) {
-    Serial.println("Connecting to MQTT...");
-    if (client.connect(CLIENT_ID, MQTT_USER, MQTT_PASSWORD)) {
-      Serial.println("connected");
-    } else {
-      Serial.print("failed with state ");
-      Serial.print(client.state());
-      delay(3000);
-    }
-  };
-  client.subscribe(IOT_LINK_MQTT_TOPIC_DOWN);
-  client.setCallback(callback);
+  //确认 AT 指令开启
+  espSerial.println("AT");
+  //配置接收模式
+  espSerial.println("AT+QMTCFG=\"recv\/mode\",0,0,1");
+  //配置华为云设备信息：AT+QMTCFG="hwauth",<client_idx>[,<product id>,<device secret>]
+  espSerial.println("AT+QMTCFG=\"hwauth\",\"63a8fee2c4efcc747bd6ee06\",\"5d2f04c861424507e4c6191abc9c5275\"");
+  //设置并打开MQTT客户端：AT+QMTOPEN=<client_idx>,<host_name>,<port>
+  espSerial.println("AT+QMTOPEN=0,\"3d7dc6e17b.iot-mqtts.cn-north-4.myhuaweicloud.com\",1883");
+  //设置客户端连接：AT+QMTCONN=<client_idx>,<clientid>,<username>,<password>
+  espSerial.println("AT+QMTCONN=0,\"63a8fee2c4efcc747bd6ee06_EC600N_0_0_2023010507\",\"63a8fee2c4efcc747bd6ee06_EC600N\",\"98508a6cb86d7d17e74a6a46d47c421b9d3ad1d0d22f257f4aab4493b1c90e30\"");
 }
 
 //MQTT 消息回调
 void callback(char* topic, byte* payload, unsigned int length) {
   Serial.print("Message arrived [");
   Serial.print(topic);
-  Serial.println("] ");
+  Serial.println("] "); 
 
   unsigned long count;
   MatchState ms(topic);
-  //请求信息校验
-  count = ms.GlobalMatch("\/sys\/properties\/get", topicMatchCallback);
-  if (count > 0) {
-    char properties[32];
-    char jsonBuf[128];
-    char responseTopic[128];
-    //获取请求 ID
-    String topicStr;
-    topicStr = topic;
-    int index = topicStr.indexOf('=');
-    String requestId = topicStr.substring(index + 1, topicStr.length());
-    //发布温湿度信息
-    sprintf(responseTopic, IOT_LINK_MQTT_TOPIC_GET_RESPONSE, DEVICE_ID, requestId.c_str());
-    sprintf(jsonBuf, IOT_LINK_BODY_FORMAT, (int)temperature, (int)humidity);
-    Serial.println(jsonBuf);
-    client.publish(responseTopic, jsonBuf);
-  }
 }
 
 //MQTT 消息发布
@@ -119,12 +108,14 @@ void mqttPost() {
   //获取设备温湿度
   temperature = dht.readTemperature();
   humidity = dht.readHumidity();
-  //发布温湿度信息
+  //发布温湿度信息 AT指令：AT+QMTPUBEX=<client_idx>,<msgid>,<qos>,<retain>,<topic>,<length>
   sprintf(jsonBuf, IOT_LINK_BODY_FORMAT, (int)temperature, (int)humidity);
-  client.publish(IOT_LINK_MQTT_TOPIC_REPORT, jsonBuf);
-  Serial.println(IOT_LINK_MQTT_TOPIC_REPORT);
-  Serial.println(jsonBuf);
-  Serial.println("MQTT Publish OK!");
+  espSerial.println("AT+QMTPUBEX=0,0,0,0," IOT_LINK_MQTT_TOPIC_REPORT ",300," jsonBuf "");
+
+  //client.publish(IOT_LINK_MQTT_TOPIC_REPORT, jsonBuf);
+  //Serial.println(IOT_LINK_MQTT_TOPIC_REPORT);
+  //Serial.println(jsonBuf);
+  //Serial.println("MQTT Publish OK!");
 }
 
 //匹配 Topic 回调
