@@ -20,7 +20,8 @@ String comdata = "";
 #define MQTT_PASSWORD "e165ab9be744be09205aa06d9e3424f13d2b479146cef6c5c778ced297ef1b6f"
 
 // 注册设备的ID和密钥
-#define DEVICE_ID "63a8fee2c4efcc747bd6ee06_dht11"
+// #define DEVICE_ID "63a8fee2c4efcc747bd6ee06_dht11"
+#define DEVICE_ID "63a8fee2c4efcc747bd6ee06_EC600N"
 #define SECRET "XD4mpkhga7MqbkA"
 #define SERVICE_ID "Dev_data"
 
@@ -51,9 +52,18 @@ void setup()
 
 void loop()
 {
+    // Serial.available()判断串口的缓冲区有无数据，当Serial.available()>0时，说明串口接收到了数据，可以读取
+    if (espSerial.available())
+    {
+        Serial.write(espSerial.read());
+    }
+    if (Serial.available())
+    {
+        espSerial.write(Serial.read());
+    }
     long now = millis();
     // 定时上报
-    if (now - lastMsg > 3000)
+    if (now - lastMsg > 5000)
     {
         lastMsg = now;
         mqttPost();
@@ -64,26 +74,21 @@ void loop()
 void mqttInit()
 {
     // 确认 AT 指令开启
-    espSerial.println("AT");
+    espSerial.print("AT\r\n");
+    delay(50);
     // 配置接收模式
-    espSerial.println("AT+QMTCFG=\"recv\/mode\",0,0,1");
-    // 配置华为云设备信息：AT+QMTCFG="hwauth",<client_idx>[,<product id>,<device secret>]
-    espSerial.println("AT+QMTCFG=\"hwauth\",\"63a8fee2c4efcc747bd6ee06\",\"5d2f04c861424507e4c6191abc9c5275\"");
+    espSerial.print("AT+QMTCFG=\"recv\/mode\",0,0,1\r\n");
+    delay(50);
+    // 配置MQTT协议版本（ 版本为 3.1.1 ）
+    espSerial.print("AT+QMTCFG=\"version\",0,4\r\n");
+    delay(50);
     // 设置并打开MQTT客户端：AT+QMTOPEN=<client_idx>,<host_name>,<port>
-    espSerial.println("AT+QMTOPEN=0,\"3d7dc6e17b.iot-mqtts.cn-north-4.myhuaweicloud.com\",1883");
+    espSerial.printf("AT+QMTOPEN=0,%s,1883\r\n", MQTT_SERVER);
+    delay(2);
     // 设置客户端连接：AT+QMTCONN=<client_idx>,<clientid>,<username>,<password>
-    espSerial.println("AT+QMTCONN=0,\"63a8fee2c4efcc747bd6ee06_EC600N_0_0_2023010507\",\"63a8fee2c4efcc747bd6ee06_EC600N\",\"98508a6cb86d7d17e74a6a46d47c421b9d3ad1d0d22f257f4aab4493b1c90e30\"");
-}
-
-// MQTT 消息回调
-void callback(char *topic, byte *payload, unsigned int length)
-{
-    Serial.print("Message arrived [");
-    Serial.print(topic);
-    Serial.println("] ");
-
-    unsigned long count;
-    MatchState ms(topic);
+    // espSerial.printf("AT+QMTCONN=0,\"63a8fee2c4efcc747bd6ee06_EC600N_0_0_2023010900\",\"63a8fee2c4efcc747bd6ee06_EC600N\",\"755a4c8634b2ae211f5c8542fccffb9bc94f33eee60c47109ef99a4dea38b63c\"\r\n");
+    espSerial.printf("AT+QMTCONN=0,%s,%s,%s\r\n", CLIENT_ID, MQTT_USER, MQTT_PASSWORD);
+    delay(2);
 }
 
 // MQTT 消息发布
@@ -91,32 +96,17 @@ void mqttPost()
 {
     char properties[32];
     char jsonBuf[128];
+    String jsonStr;
+    jsonStr = jsonBuf;
     // 获取设备温湿度
     temperature = dht.readTemperature();
     humidity = dht.readHumidity();
     // 发布温湿度信息 AT指令：AT+QMTPUBEX=<client_idx>,<msgid>,<qos>,<retain>,<topic>,<length>
     sprintf(jsonBuf, IOT_LINK_BODY_FORMAT, (int)temperature, (int)humidity);
-    espSerial.println("AT+QMTPUBEX=0,0,0,0," IOT_LINK_MQTT_TOPIC_REPORT ",300," jsonBuf "");
-
-    // client.publish(IOT_LINK_MQTT_TOPIC_REPORT, jsonBuf);
-    // Serial.println(IOT_LINK_MQTT_TOPIC_REPORT);
-    // Serial.println(jsonBuf);
-    // Serial.println("MQTT Publish OK!");
-}
-
-// 匹配 Topic 回调
-void topicMatchCallback(const char *match,
-                        const unsigned int length,
-                        const MatchState &ms)
-{
-    char cap[10];
-    Serial.write((byte *)match, length);
-    for (word i = 0; i < ms.level; i++)
-    {
-        Serial.print("Capture ");
-        Serial.print(i, DEC);
-        Serial.print(" = ");
-        ms.GetCapture(cap, i);
-        Serial.println(cap);
-    }
+    Serial.println(jsonStr);
+    // TODO: 消息大小计算有误
+    espSerial.printf("AT+QMTPUBEX=0,0,0,0,\"%s\",%d\r\n", IOT_LINK_MQTT_TOPIC_REPORT, sizeof(jsonBuf));
+    delay(50);
+    espSerial.println(jsonBuf);
+    Serial.println("MQTT Publish OK!");
 }
