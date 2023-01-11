@@ -20,20 +20,15 @@ String comdata = "";
 #define MQTT_PASSWORD "e165ab9be744be09205aa06d9e3424f13d2b479146cef6c5c778ced297ef1b6f"
 
 // 注册设备的ID和密钥
-// #define DEVICE_ID "63a8fee2c4efcc747bd6ee06_dht11"
-#define DEVICE_ID "63a8fee2c4efcc747bd6ee06_EC600N"
+#define DEVICE_ID "63a8fee2c4efcc747bd6ee06_dht11"
 #define SECRET "XD4mpkhga7MqbkA"
 #define SERVICE_ID "Dev_data"
 
 // TOPIC 信息
 #define IOT_LINK_BODY_FORMAT "{\"services\":[{\"service_id\":\"" SERVICE_ID "\",\"properties\":{\"Temperature\":%d,\"Humidity\":%d }}]}"
 // 参考上报格式：{"services":[{"service_id":"Dev_data","properties":{"temp": 39}}]}
-// 设备上报属性
-#define IOT_LINK_MQTT_TOPIC_GET_RESPONSE "$oc/devices/%s/sys/properties/get/response/request_id=%s"
 // 设备属性上报
 #define IOT_LINK_MQTT_TOPIC_REPORT "$oc/devices/" DEVICE_ID "/sys/properties/report"
-// 平台消息下发
-#define IOT_LINK_MQTT_TOPIC_DOWN "$oc/devices/" DEVICE_ID "/sys/messages/down"
 
 // 上报的温湿度值
 float temperature;
@@ -76,6 +71,9 @@ void mqttInit()
     // 确认 AT 指令开启
     espSerial.print("AT\r\n");
     delay(50);
+    // 关闭之前的连接
+    espSerial.println("AT+QMTCLOSE=0");
+    delay(50);
     // 配置接收模式
     espSerial.print("AT+QMTCFG=\"recv\/mode\",0,0,1\r\n");
     delay(50);
@@ -84,11 +82,10 @@ void mqttInit()
     delay(50);
     // 设置并打开MQTT客户端：AT+QMTOPEN=<client_idx>,<host_name>,<port>
     espSerial.printf("AT+QMTOPEN=0,%s,1883\r\n", MQTT_SERVER);
-    delay(2);
+    delay(50);
     // 设置客户端连接：AT+QMTCONN=<client_idx>,<clientid>,<username>,<password>
-    // espSerial.printf("AT+QMTCONN=0,\"63a8fee2c4efcc747bd6ee06_EC600N_0_0_2023010900\",\"63a8fee2c4efcc747bd6ee06_EC600N\",\"755a4c8634b2ae211f5c8542fccffb9bc94f33eee60c47109ef99a4dea38b63c\"\r\n");
     espSerial.printf("AT+QMTCONN=0,%s,%s,%s\r\n", CLIENT_ID, MQTT_USER, MQTT_PASSWORD);
-    delay(2);
+    delay(50);
 }
 
 // MQTT 消息发布
@@ -96,15 +93,11 @@ void mqttPost()
 {
     char properties[32];
     char jsonBuf[128];
-    String jsonStr;
-    jsonStr = jsonBuf;
     // 获取设备温湿度
     temperature = dht.readTemperature();
     humidity = dht.readHumidity();
     // 发布温湿度信息 AT指令：AT+QMTPUBEX=<client_idx>,<msgid>,<qos>,<retain>,<topic>,<length>
     sprintf(jsonBuf, IOT_LINK_BODY_FORMAT, (int)temperature, (int)humidity);
-    Serial.println(jsonStr);
-    // TODO: 消息大小计算有误
     espSerial.printf("AT+QMTPUBEX=0,0,0,0,\"%s\",%d\r\n", IOT_LINK_MQTT_TOPIC_REPORT, sizeof(jsonBuf));
     delay(50);
     espSerial.println(jsonBuf);
