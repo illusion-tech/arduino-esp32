@@ -9,31 +9,41 @@ DHT dht(DHTPIN, DHTTYPE);
 // 硬串口
 HardwareSerial espSerial(1);
 
-String comdata = "";
-
 // MQTT 连接信息
 #define MQTT_SERVER "3d7dc6e17b.iot-mqtts.cn-north-4.myhuaweicloud.com"
 #define MQTT_PORT 1883
 // 三元组：三元组生成链接：https://iot-tool.obs-website.cn-north-4.myhuaweicloud.com/
-#define CLIENT_ID "63a8fee2c4efcc747bd6ee06_dht11_0_0_2022122602"
-#define MQTT_USER "63a8fee2c4efcc747bd6ee06_dht11"
-#define MQTT_PASSWORD "e165ab9be744be09205aa06d9e3424f13d2b479146cef6c5c778ced297ef1b6f"
+// 三元组信息
+#define CLIENT_ID "63b687c5b7768d66eb705b98_0001_0_0_2023010608"
+#define MQTT_USER "63b687c5b7768d66eb705b98_0001"
+#define MQTT_PASSWORD "9611e6c421c4f279d7badd97b020000e622a6998c2b4b6b6dedafdf857ef155e"
 
 // 注册设备的ID和密钥
-#define DEVICE_ID "63a8fee2c4efcc747bd6ee06_dht11"
-#define SECRET "XD4mpkhga7MqbkA"
-#define SERVICE_ID "Dev_data"
+#define DEVICE_ID "63b687c5b7768d66eb705b98_0001"
+#define SECRET "faceb85bd48fa756850dab956d0f2f1f"
+// 服务ID
+#define SERVICE_ID "service01"
 
+// TOPIC 信息（Temperature，Humidity 为服务的两个属性名）
 // TOPIC 信息
-#define IOT_LINK_BODY_FORMAT "{\"services\":[{\"service_id\":\"" SERVICE_ID "\",\"properties\":{\"Temperature\":%d,\"Humidity\":%d }}]}"
+#define IOT_LINK_BODY_FORMAT "{\"services\":[{\"service_id\":\"" SERVICE_ID "\",\"properties\":{\"voltage\":%d,\"charge_current\":%d,\"discharge_current\":%d }}]}"
 // 参考上报格式：{"services":[{"service_id":"Dev_data","properties":{"temp": 39}}]}
 // 设备属性上报
 #define IOT_LINK_MQTT_TOPIC_REPORT "$oc/devices/" DEVICE_ID "/sys/properties/report"
+// 参考上报格式：{"services":[{"service_id":"Dev_data","properties":{"temp": 39}}]}
+// 设备上报属性
+#define IOT_LINK_MQTT_TOPIC_GET_RESPONSE "$oc/devices/%s/sys/properties/get/response/request_id=%s"
+// 设备属性上报
+#define IOT_LINK_MQTT_TOPIC_REPORT "$oc/devices/" DEVICE_ID "/sys/properties/report"
+// 平台消息下发
+#define IOT_LINK_MQTT_TOPIC_DOWN "$oc/devices/" DEVICE_ID "/sys/messages/down"
 
 // 上报的温湿度值
 float temperature;
 float humidity;
 long lastMsg = 0;
+String comdata = "";
+char requestId[10];
 
 void setup()
 {
@@ -43,6 +53,8 @@ void setup()
     // 传感器初始化
     dht.begin();
     mqttInit();
+    // 订阅消息接收
+    espSerial.printf("AT+QMTSUB=0,1,\"%s\",0\r\n", IOT_LINK_MQTT_TOPIC_DOWN);
 }
 
 void loop()
@@ -50,7 +62,13 @@ void loop()
     // Serial.available()判断串口的缓冲区有无数据，当Serial.available()>0时，说明串口接收到了数据，可以读取
     if (espSerial.available())
     {
-        Serial.write(espSerial.read());
+        comdata = espSerial.readString();
+    }
+    if (comdata.length() > 0)
+    {
+        callback(comdata);
+        Serial.print(comdata); // 打印接收到的字符
+        comdata = "";
     }
     if (Serial.available())
     {
@@ -61,7 +79,7 @@ void loop()
     if (now - lastMsg > 5000)
     {
         lastMsg = now;
-        mqttPost();
+        // mqttPost();
     }
 }
 
@@ -85,7 +103,7 @@ void mqttInit()
     delay(50);
     // 设置客户端连接：AT+QMTCONN=<client_idx>,<clientid>,<username>,<password>
     espSerial.printf("AT+QMTCONN=0,%s,%s,%s\r\n", CLIENT_ID, MQTT_USER, MQTT_PASSWORD);
-    delay(50);
+    delay(100);
 }
 
 // MQTT 消息发布
@@ -96,10 +114,59 @@ void mqttPost()
     // 获取设备温湿度
     temperature = dht.readTemperature();
     humidity = dht.readHumidity();
-    // 发布温湿度信息 AT指令：AT+QMTPUBEX=<client_idx>,<msgid>,<qos>,<retain>,<topic>,<length>
-    sprintf(jsonBuf, IOT_LINK_BODY_FORMAT, (int)temperature, (int)humidity);
-    espSerial.printf("AT+QMTPUBEX=0,0,0,0,\"%s\",%d\r\n", IOT_LINK_MQTT_TOPIC_REPORT, sizeof(jsonBuf));
+    // 发布温湿度信息 AT指令：AT+QMTPUBEX=<client_idx>,<msgid>,<qos>,<retain>,<topic>,<length>，length 为消息字节数
+    // 消息内容格式化
+    sprintf(jsonBuf, IOT_LINK_BODY_FORMAT, 3, 1, 0);
+    int msgSize = sizeof(jsonBuf);
+    espSerial.printf("AT+QMTPUBEX=0,0,0,0,\"%s\",%d\r\n", IOT_LINK_MQTT_TOPIC_REPORT, msgSize);
     delay(50);
     espSerial.println(jsonBuf);
+    espSerial.println("                                 ");
     Serial.println("MQTT Publish OK!");
+}
+
+// MQTT 消息回调
+void callback(String topic)
+{
+    Serial.printf("Message arrived [%s]", const_cast<char *>(topic.c_str()));
+
+    unsigned long count;
+    MatchState ms(const_cast<char *>(topic.c_str()));
+    // 请求信息校验
+    count = ms.GlobalMatch("\/sys\/properties\/get\/request_id", topicMatchCallback);
+    if (count > 0)
+    {
+        char properties[32];
+        char jsonBuf[128];
+        char responseTopic[128];
+        // 获取请求 ID
+        int index = topic.indexOf('=');
+        String request = topic.substring(index + 1, topic.length());
+        int index0 = request.indexOf('"');
+        String requestId = request.substring(0, index0);
+        // 发布温湿度信息
+        sprintf(jsonBuf, IOT_LINK_BODY_FORMAT, 3, 1, 0);
+        sprintf(responseTopic, IOT_LINK_MQTT_TOPIC_GET_RESPONSE, DEVICE_ID, requestId.c_str());
+        int msgSize = sizeof(jsonBuf);
+        espSerial.printf("AT+QMTPUBEX=0,0,0,0,\"%s\",%d\r\n", responseTopic, msgSize);
+        delay(50);
+        espSerial.println(jsonBuf);
+    }
+}
+
+// 正则匹配 Topic 回调
+void topicMatchCallback(const char *match,
+                        const unsigned int length,
+                        const MatchState &ms)
+{
+    char cap[10];
+    Serial.write((byte *)match, length);
+    for (word i = 0; i < ms.level; i++)
+    {
+        Serial.print("Capture ");
+        Serial.print(i, DEC);
+        Serial.print(" = ");
+        ms.GetCapture(cap, i);
+        Serial.printf(cap);
+    }
 }
